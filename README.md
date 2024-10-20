@@ -30,7 +30,7 @@ TODO
 
 4. Reinicia Apache en el panel de control de XAMPP para aplicar los cambios.
 
-5. Importa la base de datos Northwind (incluida en `parle/php.parle.dll` ) en el servidor MySQL.
+5. Importa la base de datos `inverted_index` (incluida en `db/inverted_index.sql` ) en el servidor MySQL.
 
 6. Actualiza los detalles de conexión a la base de datos en el script PHP si es necesario.
 
@@ -43,10 +43,8 @@ TODO
 3. Ingresa tu consulta de búsqueda en el campo de entrada. Aquí hay algunos ejemplos de consultas:
 
    - Búsqueda simple de palabras: `queso`
-   - Búsqueda de frases: `CADENA(productos lácteos)`
-   - Coincidencia de patrones: `PATRON(^A.*)`
-   - Búsqueda específica por campos: `queso CAMPOS(ProductName, CategoryID)`
-   - Consulta compleja: `(queso OR leche) AND NOT CADENA(productos lácteos) CAMPOS(ProductName, QuantityPerUnit)`
+   - Coincidencia de patrones: `PATRON(hola)`
+   - Operadores: OR, NOT, AND,
 
 4. Presiona el botón "Buscar" para ejecutar la consulta.
 
@@ -57,9 +55,7 @@ TODO
 - `AND`: Operador lógico AND
 - `OR`: Operador lógico OR
 - `NOT`: Operador lógico NOT
-- `CADENA(frase)`: Busca una frase exacta
 - `PATRON(regex)`: Busca utilizando un patrón de expresión regular
-- `CAMPOS(campo1, campo2, ...)`: Restringe la búsqueda a campos específicos
 
 ## Solución de problemas
 

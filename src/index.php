@@ -3,7 +3,6 @@ use Parle\{Parser, ParserException, Lexer, Token};
 
 // Conexión a la base de datos
 $mysqli = new mysqli('localhost', 'root', '', 'inverted_index');
-$mysqli->set_charset('utf8mb4');
 
 if ($mysqli->connect_error) {
     die("Connection failed: " . $mysqli->connect_error);
@@ -17,29 +16,43 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_FILES['textfiles'])) {
     }
 
     foreach ($_FILES['textfiles']['tmp_name'] as $key => $tmp_name) {
-        $fileName = $_FILES['textfiles']['name'][$key];
-        $filePath = $uploadDir . $fileName;
-        
-        if (move_uploaded_file($tmp_name, $filePath)) {
-            processFile($filePath, $fileName);
-        }
+    $fileName = $_FILES['textfiles']['name'][$key];
+
+    // Obtener la extensión del archivo
+    $extension = pathinfo($fileName, PATHINFO_EXTENSION);
+
+    // Generar un nombre de archivo único agregando un timestamp
+    $uniqueFileName = pathinfo($fileName, PATHINFO_FILENAME) . "_" . time() . "." . $extension;
+    
+    // Construir la ruta del archivo
+    $filePath = $uploadDir . $uniqueFileName;
+
+    if (move_uploaded_file($tmp_name, $filePath)) {
+        processFile($filePath, $uniqueFileName); // Usar el nombre único en lugar del original
     }
+}
 
     generateInvertedIndex();
 }
+
+
 
 function processFile($filePath, $fileName) {
     $content = file_get_contents($filePath);
     
     preg_match_all('/\p{L}+/u', mb_strtolower($content, 'UTF-8'), $matches);
     $words = $matches[0];
-    $wordCount = array_count_values($words);
+    $wordCount = count($words);
+    $wordFrequency = array_count_values($words);
 
-    $result = $GLOBALS['mysqli']->query("SELECT MAX(doc_id) as max_id FROM posting");
-    $row = $result->fetch_assoc();
-    $docId = ($row['max_id'] !== null) ? $row['max_id'] + 1 : 1;
+    // Insertar en la tabla documents
+    $stmt = $GLOBALS['mysqli']->prepare("INSERT INTO documents (file_name, word_count) VALUES (?, ?)");
+    $stmt->bind_param("si", $fileName, $wordCount);
+    $stmt->execute();
+    $docId = $GLOBALS['mysqli']->insert_id;
 
-    foreach ($wordCount as $word => $frequency) {
+    foreach ($wordFrequency as $word => $frequency) {
+        // Actualizar la tabla dictionary
         $stmt = $GLOBALS['mysqli']->prepare("INSERT INTO dictionary (term, doc_count, total_frequency) 
                                              VALUES (?, 1, ?) 
                                              ON DUPLICATE KEY UPDATE 
@@ -48,13 +61,38 @@ function processFile($filePath, $fileName) {
         $stmt->bind_param("sii", $word, $frequency, $frequency);
         $stmt->execute();
 
-        $stmt = $GLOBALS['mysqli']->prepare("INSERT INTO posting (term, doc_id, frequency, file_name, text_snippet) 
-                                             VALUES (?, ?, ?, ?, ?)");
-        $snippet = mb_substr($content, max(0, mb_strpos($content, $word) - 25), 50, 'UTF-8');
-        $stmt->bind_param("siiss", $word, $docId, $frequency, $fileName, $snippet);
+        // Insertar en la tabla posting
+        $stmt = $GLOBALS['mysqli']->prepare("
+            INSERT INTO posting (term, doc_id, frequency, text_snippet) 
+            VALUES (?, ?, ?, ?)
+            ON DUPLICATE KEY UPDATE 
+                frequency = frequency + VALUES(frequency), 
+                text_snippet = VALUES(text_snippet)
+        ");
+        
+        // Encontrar la posición de la palabra en el contenido
+        $pos = mb_stripos($content, $word);
+        
+        // Calcular el inicio y fin del snippet
+        $snippetLength = 50; // Longitud total del snippet
+        $start = max(0, $pos - ($snippetLength / 2));
+        $snippet = mb_substr($content, $start, $snippetLength, 'UTF-8');
+        
+
+        
+        // Añadir elipsis si el snippet no está al principio o al final del contenido
+        if ($start > 0) {
+            $snippet = "..." . $snippet;
+        }
+        if ($start + $snippetLength < mb_strlen($content)) {
+            $snippet = $snippet . "...";
+        }
+
+        $stmt->bind_param("siis", $word, $docId, $frequency, $snippet);
         $stmt->execute();
     }
 }
+
 
 function generateInvertedIndex() {
     // Esta función actualizaría el índice invertido en la base de datos
@@ -96,7 +134,7 @@ function parse_query($query)
     $lexer->push('PATRON', $parser->tokenId('PATRON'));
     $lexer->push('\(', $parser->tokenId('LPAREN'));
     $lexer->push('\)', $parser->tokenId('RPAREN'));
-    $lexer->push('[a-zA-Z0-9_.]+', $parser->tokenId('WORD'));
+    $lexer->push('[a-zA-Z0-9_.áéíóúÁÉÍÓÚñÑüÜ]+', $parser->tokenId('WORD'));
     $lexer->push('\\s+', Token::SKIP);
     $lexer->build();
 
@@ -144,7 +182,7 @@ function parse_query($query)
                         break;
                     case $prod_term_pattern:
                         $pattern = $parser->sigil(2);
-                        $ast[] = ['type' => 'PATTERN', 'value' => $pattern];
+                        $ast[] = ['type' => 'PATRON', 'value' => $pattern];
                         break;
                 }
                 break;
@@ -157,12 +195,17 @@ function parse_query($query)
 
 function build_sql($ast)
 {
-    $sql = "SELECT d.term, d.doc_count, d.total_frequency, p.doc_id, p.frequency, p.file_name, p.text_snippet 
-            FROM dictionary d
-            JOIN posting p ON d.term = p.term
+    $sql = "SELECT d.file_name, p.text_snippet, d.doc_id, p.term,
+                   SUM((p.frequency / d.word_count) * LOG(10,(SELECT COUNT(*) FROM documents) / dict.doc_count)) AS tf_idf
+            FROM documents d
+            JOIN posting p ON d.doc_id = p.doc_id
+            JOIN dictionary dict ON p.term = dict.term
             WHERE ";
     $conditions = build_conditions($ast);
-    return $sql . $conditions;
+    $sql .= $conditions;
+    $sql .= " GROUP BY d.file_name, p.text_snippet, d.doc_id, p.term
+              ORDER BY tf_idf DESC";
+    return $sql;
 }
 
 function build_conditions($node)
@@ -173,17 +216,23 @@ function build_conditions($node)
 
     switch ($node['type']) {
         case 'AND':
-            return '(' . build_conditions($node['left']) . ' AND ' . build_conditions($node['right']) . ')';
+            return "d.doc_id IN (
+                SELECT doc_id FROM posting p WHERE " . build_conditions($node['left']) . "
+                INTERSECT
+                SELECT doc_id FROM posting p WHERE " . build_conditions($node['right']) . "
+            )";
         case 'OR':
             return '(' . build_conditions($node['left']) . ' OR ' . build_conditions($node['right']) . ')';
         case 'NOT':
-            return 'NOT (' . build_conditions($node['term']) . ')';
+            return "d.doc_id NOT IN (SELECT p.doc_id FROM posting p WHERE p.term = '" . addslashes($node['term']['value']) . "')";
         case 'WORD':
-            return "d.term = '" . addslashes($node['value']) . "'";
-        case 'PATTERN':
-            return "d.term REGEXP '" . addslashes($node['value']) . "'";
+            return "p.term = '" . addslashes($node['value']) . "'";
+        case 'PATRON':
+            return "p.term REGEXP '" . addslashes($node['value']) . "'";
     }
 }
+
+
 
 function ast_to_json($ast)
 {
@@ -219,11 +268,8 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['query'])) {
 
     try {
         $parsed_query = parse_query($query);
-
         $astJson = json_encode(ast_to_json($parsed_query));
-
         $sql = build_sql($parsed_query);
-
         $results = $mysqli->query($sql);
 
         if ($results === false) {
@@ -251,7 +297,9 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['query'])) {
     <script>
         var astData = <?php echo $astJson ?? 'null'; ?>;
     </script>
-    <script async src="ast-renderer.js"></script>
+    <script defer src="ast-renderer.js"></script>
+    <script defer src="highlight.js"></script>
+
 </head>
 <body>
     <div class='title-container'>
@@ -261,7 +309,7 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['query'])) {
 
     <form method="post" action="<?php echo $_SERVER['PHP_SELF']; ?>" enctype="multipart/form-data">
         <div class='input-container'>
-            <input type="file" name="textfiles[]" multiple accept=".txt">
+            <input id='file-input' type="file" name="textfiles[]" multiple accept=".txt">
             <input type="submit" value="Cargar Archivos">
         </div>
     </form>
@@ -287,50 +335,27 @@ if ($_SERVER['REQUEST_METHOD'] == 'POST' && isset($_POST['query'])) {
         <div class="message"><?php echo htmlspecialchars($globalQuery); ?></div>
     <?php endif; ?>
 
-    <?php if (isset($results)): ?>
-        <?php if ($results->num_rows > 0): ?>
-            <div class="table-container">
-                <table>
-                    <thead>
-                        <tr>
-                            <th>Término</th>
-                            <th>Conteo de Documentos</th>
-                            <th>Frecuencia Total</th>
-                            <th>ID del Documento</th>
-                            <th>Frecuencia</th>
-                            <th>Nombre del Archivo</th>
-                            <th>Fragmento de Texto</th>
-                        </tr>
-                    </thead>
-                    <tbody>
-                    <?php while ($row = $results->fetch_assoc()): ?>
-                        <tr>
-                            <td><?php echo htmlspecialchars($row['term']); ?></td>
-                            <td><?php echo htmlspecialchars($row['doc_count']); ?></td>
-                            <td><?php echo htmlspecialchars($row['total_frequency']); ?></td>
-                            <td><?php echo htmlspecialchars($row['doc_id']); ?></td>
-                            <td><?php echo htmlspecialchars($row['frequency']); ?></td>
-                            <td><?php echo htmlspecialchars($row['file_name']); ?></td>
-                            <td><?php echo htmlspecialchars($row['text_snippet']); ?></td>
-                        </tr>
-                    <?php endwhile; ?>
-                    </tbody>
-                </table>
-            </div>
-        <?php else: ?>
-            <span class='message'>No se encontraron resultados.</span>
-        <?php endif; ?>
-    <?php endif; ?>
+   <?php if (isset($results)): ?>
+    <?php if ($results->num_rows > 0): ?>
+        <div class="results-container">
+            <?php while ($row = $results->fetch_assoc()): ?>
+                <div class="result-item">
+                    <a href="download.php?file=<?php echo urlencode($row['file_name']); ?>" class="download-link">
+                        Descargar <?php echo htmlspecialchars($row['file_name']); ?>
+                    </a>
+                    <p class="snippet" data-terms='<?php echo htmlspecialchars(json_encode([$row['term']])); ?>'>
+                        <?php echo htmlspecialchars($row['text_snippet']); ?>
+                    </p>
+                    <p class="similarity">Similitud del Coseno:</p>
 
-    <?php if (isset($sqlText)): ?>
-        <code>
-            <div>
-                <span>
-                    <?php echo htmlspecialchars($sqlText); ?>
-                </span>
-            </div>
-        </code>
+                   <p class="tf-idf">TF-IDF: <?php echo number_format($row['tf_idf'], 4); ?></p>
+                </div>
+            <?php endwhile; ?>
+        </div>
+    <?php else: ?>
+        <span class='message'>No se encontraron resultados.</span>
     <?php endif; ?>
+<?php endif; ?>
 
     <?php if (isset($astJson)): ?>
         <canvas id="astCanvas" width="800" height="600"></canvas>

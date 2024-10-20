@@ -47,7 +47,7 @@ body {
 }
 
 .title {
-  font-size: 5rem;
+  font-size: 4rem;
   font-weight: 900;
   margin-bottom: 2rem;
   font-style: italic;
@@ -57,7 +57,7 @@ body {
 }
 
 .subtitle {
-  font-size: 2rem;
+  font-size: 1.5rem;
   font-weight: 600;
   margin-bottom: 3rem;
   text-align: center;
@@ -262,8 +262,50 @@ tr:hover {
   margin-bottom: 5px;
 }
 
+#file-input{
+  font-size: large;
+  font-family: inherit;
+}
+
 #astCanvas{
   margin-top: 2rem;
+}
+
+.results-container {
+    margin-top: 20px;
+}
+
+.result-item {
+    margin-bottom: 15px;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 5px;
+}
+
+.download-link {
+    display: block;
+    margin-bottom: 5px;
+    color: #007bff;
+    text-decoration: none;
+}
+
+.download-link:hover {
+    text-decoration: underline;
+}
+
+.snippet {
+    font-style: italic;
+    color: #666;
+}
+
+.similarity, .tf-idf {
+    font-size: 0.9em;
+    color: #888;
+}
+
+.highlight {
+    font-weight: bold;
+    text-decoration: underline;
 }
 
 @media (max-width: 768px) {
